@@ -1,0 +1,6 @@
+node_modules/
+nostr-scheduler.db
+nostr-scheduler.db-wal
+nostr-scheduler.db-shm
+uploads/
+.DS_Store

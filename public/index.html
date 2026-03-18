@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nostr Scheduler | Bolt Advantage</title>
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <style>
+    :root {
+      --navy: #172030;
+      --navy-deep: #0f1a2b;
+      --crimson: #C41E3A;
+      --crimson-dark: #9B1530;
+      --crimson-light: #E8687E;
+      --btc: #F7931A;
+      --btc-dark: #d4780d;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--navy-deep); color: #e0e0e0; min-height: 100vh; }
+
+    .container { max-width: 900px; margin: 0 auto; padding: 20px; }
+
+    .header { display: flex; align-items: center; gap: 16px; margin-bottom: 8px; }
+    .header img { height: 48px; width: auto; }
+    h1 { color: var(--crimson); font-size: 1.8rem; }
+    .subtitle { color: #888; margin-bottom: 30px; }
+    h2 { color: var(--crimson-light); margin-bottom: 15px; font-size: 1.2rem; }
+    h3 { color: var(--crimson); margin-bottom: 10px; font-size: 1rem; }
+
+    .tabs { display: flex; gap: 0; margin-bottom: 24px; border-bottom: 2px solid #2a3550; }
+    .tab { padding: 10px 24px; cursor: pointer; border: none; background: transparent; color: #888; font-size: 1rem; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; }
+    .tab:hover { color: var(--crimson-light); }
+    .tab.active { color: var(--crimson); border-bottom-color: var(--crimson); }
+
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    .card { background: var(--navy); border-radius: 10px; padding: 20px; margin-bottom: 16px; border: 1px solid #2a3550; border-top: 3px solid var(--crimson); }
+
+    label { display: block; margin-bottom: 6px; color: #aaa; font-size: 0.9rem; }
+    input, textarea, select { width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #2a3550; background: var(--navy-deep); color: #e0e0e0; font-size: 0.95rem; margin-bottom: 14px; }
+    input:focus, textarea:focus, select:focus { outline: none; border-color: var(--crimson); }
+    textarea { resize: vertical; min-height: 100px; font-family: inherit; }
+
+    .btn { padding: 10px 20px; border-radius: 6px; border: none; cursor: pointer; font-size: 0.95rem; font-weight: 500; transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; }
+    .btn-primary { background: linear-gradient(135deg, var(--crimson), var(--crimson-dark)); color: white; }
+    .btn-primary:hover { background: linear-gradient(135deg, #d4223f, var(--crimson)); }
+    .btn-amber { background: linear-gradient(135deg, var(--btc), var(--btc-dark)); color: #1a1a2e; }
+    .btn-amber:hover { background: linear-gradient(135deg, #ffaa33, var(--btc)); }
+    .btn-danger { background: #e74c3c; color: white; }
+    .btn-danger:hover { background: #c0392b; }
+    .btn-send { background: #27ae60; color: white; }
+    .btn-send:hover { background: #219a52; }
+    .btn-upload { background: #3498db; color: white; }
+    .btn-upload:hover { background: #2980b9; }
+    .btn-ext { background: #8e44ad; color: white; }
+    .btn-ext:hover { background: #7d3c98; }
+    .btn-sm { padding: 6px 12px; font-size: 0.85rem; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn-row { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+
+    .account-item { padding: 14px; background: var(--navy-deep); border-radius: 8px; margin-bottom: 8px; border-left: 3px solid var(--crimson); }
+    .account-header { display: flex; justify-content: space-between; align-items: center; }
+    .account-info { flex: 1; }
+    .account-name { font-weight: 600; color: var(--crimson-light); }
+    .account-badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; margin-left: 8px; font-weight: 400; }
+    .badge-key { background: #2ecc71; color: #1a1a2e; }
+    .badge-extension { background: #8e44ad; color: white; }
+    .badge-bunker { background: var(--btc); color: #1a1a2e; }
+    .account-npub { font-size: 0.8rem; color: #556; font-family: monospace; word-break: break-all; }
+
+    .relay-section { margin-top: 10px; padding-top: 10px; border-top: 1px solid #1c2840; }
+    .relay-tag { display: inline-flex; align-items: center; gap: 4px; background: var(--navy); border: 1px solid #2a3550; border-radius: 14px; padding: 3px 10px; font-size: 0.75rem; color: #aaa; margin: 2px 4px 2px 0; }
+    .relay-tag button { background: none; border: none; color: var(--crimson); cursor: pointer; font-size: 0.9rem; padding: 0 2px; }
+    .relay-add-row { display: flex; gap: 6px; margin-top: 8px; }
+    .relay-add-row input { margin-bottom: 0; flex: 1; padding: 6px 10px; font-size: 0.85rem; }
+    .relay-add-row button { white-space: nowrap; }
+
+    .post-item { padding: 14px; background: var(--navy-deep); border-radius: 8px; margin-bottom: 8px; border-left: 3px solid var(--crimson-dark); }
+    .post-info { flex: 1; }
+    .post-content { margin-bottom: 6px; white-space: pre-wrap; }
+    .post-meta { font-size: 0.8rem; color: #888; }
+    .post-image { max-width: 120px; max-height: 80px; border-radius: 6px; margin-top: 6px; }
+
+    .status-pending { color: var(--btc); }
+    .status-sent { color: #27ae60; }
+    .status-failed { color: #e74c3c; }
+
+    .empty { text-align: center; padding: 40px; color: #556; }
+
+    .help-text { font-size: 0.8rem; color: #556; margin-top: -10px; margin-bottom: 14px; }
+
+    .image-preview { max-width: 200px; max-height: 150px; border-radius: 8px; margin-bottom: 14px; }
+
+    .image-upload-area { display: flex; gap: 10px; align-items: start; margin-bottom: 14px; }
+    .image-upload-area input[type="file"] { margin-bottom: 0; flex: 1; }
+
+    .upload-progress { font-size: 0.85rem; color: #3498db; margin-bottom: 14px; }
+
+    .or-divider { text-align: center; color: #445; margin: 20px 0; font-size: 0.9rem; position: relative; }
+    .or-divider::before, .or-divider::after { content: ''; position: absolute; top: 50%; width: 30%; height: 1px; background: #2a3550; }
+    .or-divider::before { left: 5%; }
+    .or-divider::after { right: 5%; }
+
+    .login-section { margin-bottom: 16px; padding-bottom: 16px; }
+
+    .flash { position: fixed; top: 20px; right: 20px; padding: 12px 20px; border-radius: 8px; color: white; font-weight: 500; z-index: 100; animation: fadeOut 4s forwards; max-width: 400px; }
+    .flash-success { background: #27ae60; }
+    .flash-error { background: var(--crimson); }
+    @keyframes fadeOut { 0%,70% { opacity: 1; } 100% { opacity: 0; } }
+
+    .status-msg { margin-top: 8px; font-size: 0.85rem; }
+
+    .footer { text-align: center; margin-top: 40px; padding: 20px; color: #445; font-size: 0.8rem; border-top: 1px solid #1c2840; }
+    .footer a { color: var(--crimson-light); text-decoration: none; }
+    .footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <img src="/logo.svg" alt="Bolt Advantage">
+      <div>
+        <h1>Nostr Scheduler</h1>
+        <p class="subtitle">Schedule and publish posts across multiple Nostr accounts</p>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="compose">Compose</button>
+      <button class="tab" data-tab="scheduled">Scheduled</button>
+      <button class="tab" data-tab="accounts">Accounts</button>
+    </div>
+
+    <!-- COMPOSE TAB -->
+    <div class="panel active" id="panel-compose">
+      <div class="card">
+        <h2>New Post</h2>
+        <label for="post-account">Account</label>
+        <select id="post-account"></select>
+
+        <label for="post-content">Content</label>
+        <textarea id="post-content" placeholder="What's on your mind?"></textarea>
+
+        <label>Image (optional)</label>
+        <div class="image-upload-area">
+          <input type="file" id="post-image" accept="image/*">
+          <button class="btn btn-upload btn-sm" id="btn-upload-nostr" disabled>Upload to nostr.build</button>
+        </div>
+        <div id="upload-progress"></div>
+        <div id="image-preview-container"></div>
+
+        <label for="post-image-url">Image URL</label>
+        <input type="url" id="post-image-url" placeholder="https://image.nostr.build/...">
+        <p class="help-text">Select a file above and click "Upload to nostr.build", or paste any public image URL directly.</p>
+
+        <label for="post-schedule">Schedule Date & Time</label>
+        <input type="datetime-local" id="post-schedule">
+
+        <button class="btn btn-primary" id="btn-schedule">Schedule Post</button>
+      </div>
+    </div>
+
+    <!-- SCHEDULED TAB -->
+    <div class="panel" id="panel-scheduled">
+      <div class="card">
+        <h2>Scheduled Posts</h2>
+        <div id="posts-list"><div class="empty">No posts scheduled yet</div></div>
+      </div>
+    </div>
+
+    <!-- ACCOUNTS TAB -->
+    <div class="panel" id="panel-accounts">
+      <div class="card">
+        <h2>Add Account</h2>
+
+        <!-- Option 1: Amber / nsecBunker -->
+        <div class="login-section">
+          <h3>Amber / nsecBunker (NIP-46)</h3>
+          <p class="help-text" style="margin-top:0;margin-bottom:14px;">
+            Open Amber, go to your account's "Nostr Connect" and copy the bunker:// URL.
+            Amber must be online when scheduled posts are published.
+          </p>
+          <label for="acc-name-bunker">Display Name</label>
+          <input type="text" id="acc-name-bunker" placeholder="My Amber Account">
+          <label for="acc-bunker-url">Bunker URL</label>
+          <input type="text" id="acc-bunker-url" placeholder="bunker://pubkey?relay=wss://relay.nsec.app&secret=...">
+          <button class="btn btn-amber" id="btn-login-bunker">Connect to Amber</button>
+          <div id="bunker-status" class="status-msg"></div>
+        </div>
+
+        <div class="or-divider">or</div>
+
+        <!-- Option 2: NIP-07 Extension -->
+        <div class="login-section">
+          <h3>Browser Extension (nos2x, Alby, etc.)</h3>
+          <p class="help-text" style="margin-top:0;margin-bottom:14px;">
+            Uses NIP-07 to get your public key. Events are signed in the browser when you schedule a post.
+          </p>
+          <label for="acc-name-ext">Display Name</label>
+          <input type="text" id="acc-name-ext" placeholder="My Extension Account">
+          <button class="btn btn-ext" id="btn-login-extension">Login with Extension</button>
+          <div id="extension-status" class="status-msg"></div>
+        </div>
+
+        <div class="or-divider">or</div>
+
+        <!-- Option 3: Manual Key -->
+        <div class="login-section">
+          <h3>Private Key (hex)</h3>
+          <p class="help-text" style="margin-top:0;margin-bottom:14px;">
+            Paste your hex private key directly. Stored locally in SQLite, never transmitted.
+          </p>
+          <label for="acc-name">Display Name</label>
+          <input type="text" id="acc-name" placeholder="My Nostr Account">
+
+          <label for="acc-nsec">Private Key (hex format)</label>
+          <input type="password" id="acc-nsec" placeholder="64-character hex private key">
+
+          <label for="acc-relays">Relays (comma-separated)</label>
+          <input type="text" id="acc-relays" placeholder="wss://relay.damus.io, wss://nos.lol, wss://relay.nostr.band">
+
+          <button class="btn btn-primary" id="btn-add-account">Add Account</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Your Accounts</h2>
+        <div id="accounts-list"><div class="empty">No accounts added yet</div></div>
+      </div>
+    </div>
+
+    <div class="footer">
+      Built by <a href="https://boltadvantage.com">Bolt Advantage</a>
+    </div>
+  </div>
+
+  <script>
+    // --- Tabs ---
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+      });
+    });
+
+    function flash(msg, type = 'success') {
+      const el = document.createElement('div');
+      el.className = 'flash flash-' + type;
+      el.textContent = msg;
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 4200);
+    }
+
+    // Track accounts data globally
+    let accountsData = [];
+
+    // --- Accounts ---
+    async function loadAccounts() {
+      const res = await fetch('/api/accounts');
+      accountsData = await res.json();
+
+      const list = document.getElementById('accounts-list');
+      const select = document.getElementById('post-account');
+
+      if (accountsData.length === 0) {
+        list.innerHTML = '<div class="empty">No accounts added yet</div>';
+        select.innerHTML = '<option value="">-- Add an account first --</option>';
+        return;
+      }
+
+      list.innerHTML = accountsData.map(a => {
+        const relays = JSON.parse(a.relays);
+        const badgeMap = { key: 'badge-key', extension: 'badge-extension', bunker: 'badge-bunker' };
+        const labelMap = { key: 'Key', extension: 'Extension', bunker: 'Amber/Bunker' };
+        const badgeClass = badgeMap[a.login_type] || 'badge-key';
+        const badgeText = labelMap[a.login_type] || 'Key';
+        return `
+          <div class="account-item">
+            <div class="account-header">
+              <div class="account-info">
+                <div>
+                  <span class="account-name">${esc(a.name)}</span>
+                  <span class="account-badge ${badgeClass}">${badgeText}</span>
+                </div>
+                <div class="account-npub">${a.npub_hex}</div>
+              </div>
+              <button class="btn btn-danger btn-sm" onclick="deleteAccount(${a.id})">Remove</button>
+            </div>
+            <div class="relay-section">
+              <div id="relays-${a.id}">
+                ${relays.map(r => `
+                  <span class="relay-tag">
+                    ${esc(r)}
+                    <button onclick="removeRelay(${a.id}, '${esc(r)}')" title="Remove relay">&times;</button>
+                  </span>
+                `).join('')}
+              </div>
+              <div class="relay-add-row">
+                <input type="text" id="relay-input-${a.id}" placeholder="wss://relay.example.com">
+                <button class="btn btn-primary btn-sm" onclick="addRelay(${a.id})">Add Relay</button>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      select.innerHTML = accountsData.map(a => {
+        const label = a.login_type === 'bunker' ? 'amber' : a.login_type === 'extension' ? 'ext' : 'key';
+        return `<option value="${a.id}">${esc(a.name)} (${label})</option>`;
+      }).join('');
+    }
+
+    // --- Relay Management ---
+    async function addRelay(accountId) {
+      const input = document.getElementById('relay-input-' + accountId);
+      const url = input.value.trim();
+      if (!url || !url.startsWith('wss://')) return flash('Relay must start with wss://', 'error');
+
+      const account = accountsData.find(a => a.id === accountId);
+      const relays = JSON.parse(account.relays);
+      if (relays.includes(url)) return flash('Relay already added', 'error');
+
+      relays.push(url);
+      await fetch('/api/accounts/' + accountId + '/relays', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ relays: JSON.stringify(relays) })
+      });
+      input.value = '';
+      flash('Relay added');
+      loadAccounts();
+    }
+
+    async function removeRelay(accountId, relayUrl) {
+      const account = accountsData.find(a => a.id === accountId);
+      const relays = JSON.parse(account.relays).filter(r => r !== relayUrl);
+      if (relays.length === 0) return flash('Must have at least one relay', 'error');
+
+      await fetch('/api/accounts/' + accountId + '/relays', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ relays: JSON.stringify(relays) })
+      });
+      flash('Relay removed');
+      loadAccounts();
+    }
+
+    // --- Amber / nsecBunker (NIP-46) Login ---
+    document.getElementById('btn-login-bunker').addEventListener('click', async () => {
+      const statusEl = document.getElementById('bunker-status');
+      const name = document.getElementById('acc-name-bunker').value.trim();
+      const bunkerUrl = document.getElementById('acc-bunker-url').value.trim();
+
+      if (!name) return flash('Enter a display name first', 'error');
+      if (!bunkerUrl) return flash('Paste your bunker:// URL from Amber', 'error');
+      if (!bunkerUrl.startsWith('bunker://')) return flash('URL must start with bunker://', 'error');
+
+      const btn = document.getElementById('btn-login-bunker');
+      btn.disabled = true;
+      statusEl.innerHTML = '<span style="color:#f59e0b;">Connecting to Amber... (approve the request in Amber)</span>';
+
+      try {
+        const res = await fetch('/api/accounts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, bunker_url: bunkerUrl, login_type: 'bunker' })
+        });
+
+        if (res.ok) {
+          flash('Amber account connected!');
+          document.getElementById('acc-name-bunker').value = '';
+          document.getElementById('acc-bunker-url').value = '';
+          statusEl.innerHTML = '<span style="color:#27ae60;">Connected successfully!</span>';
+          loadAccounts();
+        } else {
+          const err = await res.json();
+          statusEl.innerHTML = `<span style="color:#e74c3c;">${esc(err.error)}</span>`;
+        }
+      } catch (e) {
+        statusEl.innerHTML = `<span style="color:#e74c3c;">Connection error: ${esc(e.message)}</span>`;
+      }
+
+      btn.disabled = false;
+    });
+
+    // --- NIP-07 Extension Login ---
+    document.getElementById('btn-login-extension').addEventListener('click', async () => {
+      const statusEl = document.getElementById('extension-status');
+
+      if (!window.nostr) {
+        statusEl.innerHTML = '<span style="color:#e74c3c;">No Nostr extension detected. Install nos2x, Alby, or similar.</span>';
+        return;
+      }
+
+      const name = document.getElementById('acc-name-ext').value.trim();
+      if (!name) return flash('Enter a display name first', 'error');
+
+      try {
+        statusEl.innerHTML = '<span style="color:#3498db;">Requesting public key from extension...</span>';
+        const pubkey = await window.nostr.getPublicKey();
+
+        const res = await fetch('/api/accounts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, npub_hex: pubkey, login_type: 'extension' })
+        });
+
+        if (res.ok) {
+          flash('Extension account added!');
+          document.getElementById('acc-name-ext').value = '';
+          statusEl.innerHTML = '';
+          loadAccounts();
+        } else {
+          const err = await res.json();
+          statusEl.innerHTML = `<span style="color:#e74c3c;">${esc(err.error)}</span>`;
+        }
+      } catch (e) {
+        statusEl.innerHTML = `<span style="color:#e74c3c;">Extension error: ${esc(e.message)}</span>`;
+      }
+    });
+
+    // --- Manual Account Add ---
+    document.getElementById('btn-add-account').addEventListener('click', async () => {
+      const name = document.getElementById('acc-name').value.trim();
+      const nsec_hex = document.getElementById('acc-nsec').value.trim();
+      const relaysRaw = document.getElementById('acc-relays').value.trim();
+
+      if (!name || !nsec_hex) return flash('Name and private key required', 'error');
+
+      const relays = relaysRaw
+        ? JSON.stringify(relaysRaw.split(',').map(r => r.trim()).filter(Boolean))
+        : undefined;
+
+      const res = await fetch('/api/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, nsec_hex, relays, login_type: 'key' })
+      });
+
+      if (res.ok) {
+        flash('Account added');
+        document.getElementById('acc-name').value = '';
+        document.getElementById('acc-nsec').value = '';
+        document.getElementById('acc-relays').value = '';
+        loadAccounts();
+      } else {
+        const err = await res.json();
+        flash(err.error, 'error');
+      }
+    });
+
+    async function deleteAccount(id) {
+      if (!confirm('Remove this account? Pending posts for it will also be deleted.')) return;
+      await fetch('/api/accounts/' + id, { method: 'DELETE' });
+      flash('Account removed');
+      loadAccounts();
+      loadPosts();
+    }
+
+    // --- Image Upload to nostr.build ---
+    const imageInput = document.getElementById('post-image');
+    const uploadBtn = document.getElementById('btn-upload-nostr');
+    const progressEl = document.getElementById('upload-progress');
+
+    imageInput.addEventListener('change', (e) => {
+      const container = document.getElementById('image-preview-container');
+      if (e.target.files[0]) {
+        const url = URL.createObjectURL(e.target.files[0]);
+        container.innerHTML = `<img src="${url}" class="image-preview">`;
+        uploadBtn.disabled = false;
+      } else {
+        container.innerHTML = '';
+        uploadBtn.disabled = true;
+      }
+    });
+
+    uploadBtn.addEventListener('click', async () => {
+      const file = imageInput.files[0];
+      if (!file) return;
+
+      uploadBtn.disabled = true;
+      progressEl.innerHTML = '<span class="upload-progress">Uploading to nostr.build...</span>';
+
+      const formData = new FormData();
+      formData.append('image', file);
+
+      try {
+        const res = await fetch('/api/upload-image', { method: 'POST', body: formData });
+        const result = await res.json();
+
+        if (res.ok && result.url) {
+          document.getElementById('post-image-url').value = result.url;
+          progressEl.innerHTML = '<span style="color:#27ae60;font-size:0.85rem;">Uploaded! URL filled in below.</span>';
+          flash('Image uploaded to nostr.build!');
+        } else {
+          progressEl.innerHTML = `<span style="color:#e74c3c;font-size:0.85rem;">Upload failed: ${esc(result.error)}</span>`;
+        }
+      } catch (e) {
+        progressEl.innerHTML = `<span style="color:#e74c3c;font-size:0.85rem;">Upload error: ${esc(e.message)}</span>`;
+      }
+
+      uploadBtn.disabled = false;
+    });
+
+    // --- Posts ---
+    async function loadPosts() {
+      const res = await fetch('/api/posts');
+      const posts = await res.json();
+
+      const list = document.getElementById('posts-list');
+      if (posts.length === 0) {
+        list.innerHTML = '<div class="empty">No posts scheduled yet</div>';
+        return;
+      }
+
+      list.innerHTML = posts.map(p => {
+        const dt = new Date(p.scheduled_at + (p.scheduled_at.includes('Z') ? '' : 'Z'));
+        const timeStr = dt.toLocaleString();
+        const imgHtml = p.image_url
+          ? `<img src="${esc(p.image_url)}" class="post-image" onerror="this.style.display='none'">`
+          : '';
+
+        const signLabel = p.login_type === 'bunker' ? 'bunker-signed'
+          : p.login_type === 'extension' ? 'ext-signed' : '';
+        const signColor = p.login_type === 'bunker' ? '#f59e0b' : '#8e44ad';
+
+        return `
+          <div class="post-item">
+            <div style="display:flex;justify-content:space-between;align-items:start;">
+              <div class="post-info">
+                <div class="post-content">${esc(p.content)}</div>
+                ${imgHtml}
+                <div class="post-meta">
+                  <strong>${esc(p.account_name)}</strong> &middot;
+                  <span class="status-${p.status}">${p.status.toUpperCase()}</span> &middot;
+                  ${timeStr}
+                  ${signLabel ? ` &middot; <span style="color:${signColor};">${signLabel}</span>` : ''}
+                </div>
+                ${p.error ? `<div class="post-meta" style="color:#e74c3c;">Error: ${esc(p.error)}</div>` : ''}
+                ${p.event_id ? `<div class="post-meta">Event: ${p.event_id.slice(0, 16)}...</div>` : ''}
+              </div>
+              <div class="btn-row">
+                ${p.status === 'pending' ? `
+                  <button class="btn btn-send btn-sm" onclick="sendNow(${p.id})">Send Now</button>
+                  <button class="btn btn-danger btn-sm" onclick="deletePost(${p.id})">Delete</button>
+                ` : ''}
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    document.getElementById('btn-schedule').addEventListener('click', async () => {
+      const account_id = document.getElementById('post-account').value;
+      const content = document.getElementById('post-content').value.trim();
+      const scheduled_at = document.getElementById('post-schedule').value;
+      const image_url = document.getElementById('post-image-url').value.trim();
+
+      if (!account_id) return flash('Select an account first', 'error');
+      if (!content) return flash('Write some content', 'error');
+      if (!scheduled_at) return flash('Pick a date and time', 'error');
+
+      const isoDate = new Date(scheduled_at).toISOString();
+      const account = accountsData.find(a => a.id === parseInt(account_id));
+
+      let signedEvent = null;
+
+      // For extension accounts, sign the event client-side via NIP-07
+      if (account && account.login_type === 'extension') {
+        if (!window.nostr) {
+          return flash('Nostr extension not available. Cannot sign event.', 'error');
+        }
+
+        let fullContent = content;
+        if (image_url) fullContent += '\n' + image_url;
+
+        const tags = [];
+        if (image_url) tags.push(['r', image_url]);
+
+        const eventTemplate = {
+          kind: 1,
+          created_at: Math.floor(new Date(scheduled_at).getTime() / 1000),
+          tags,
+          content: fullContent,
+        };
+
+        try {
+          flash('Requesting signature from extension...');
+          signedEvent = await window.nostr.signEvent(eventTemplate);
+        } catch (e) {
+          return flash('Extension signing failed: ' + e.message, 'error');
+        }
+      }
+
+      // Bunker accounts sign server-side at publish time, no pre-signing needed
+
+      const body = {
+        account_id: parseInt(account_id),
+        content,
+        scheduled_at: isoDate,
+        image_url: image_url || undefined,
+        signed_event: signedEvent ? JSON.stringify(signedEvent) : undefined,
+      };
+
+      const res = await fetch('/api/posts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+
+      if (res.ok) {
+        flash('Post scheduled!');
+        document.getElementById('post-content').value = '';
+        document.getElementById('post-image-url').value = '';
+        document.getElementById('post-image').value = '';
+        document.getElementById('image-preview-container').innerHTML = '';
+        document.getElementById('upload-progress').innerHTML = '';
+        uploadBtn.disabled = true;
+        loadPosts();
+        document.querySelector('[data-tab="scheduled"]').click();
+      } else {
+        const err = await res.json();
+        flash(err.error, 'error');
+      }
+    });
+
+    async function deletePost(id) {
+      if (!confirm('Delete this scheduled post?')) return;
+      await fetch('/api/posts/' + id, { method: 'DELETE' });
+      flash('Post deleted');
+      loadPosts();
+    }
+
+    async function sendNow(id) {
+      if (!confirm('Send this post right now?')) return;
+      const res = await fetch('/api/posts/' + id + '/send-now', { method: 'POST' });
+      if (res.ok) {
+        flash('Post sent!');
+      } else {
+        const err = await res.json();
+        flash('Send failed: ' + err.error, 'error');
+      }
+      loadPosts();
+    }
+
+    function esc(str) {
+      if (!str) return '';
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    // Initial load
+    loadAccounts();
+    loadPosts();
+
+    // Auto-refresh posts every 30s
+    setInterval(loadPosts, 30000);
+  </script>
+</body>
+</html>
