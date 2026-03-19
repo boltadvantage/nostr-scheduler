@@ -56,6 +56,8 @@
     .btn-upload:hover { background: #2980b9; }
     .btn-ext { background: #8e44ad; color: white; }
     .btn-ext:hover { background: #7d3c98; }
+    .btn-outline { background: transparent; border: 1px solid #2a3550; color: #aaa; }
+    .btn-outline:hover { border-color: var(--crimson); color: var(--crimson-light); }
     .btn-sm { padding: 6px 12px; font-size: 0.85rem; }
     .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
@@ -79,6 +81,7 @@
     .relay-add-row button { white-space: nowrap; }
 
     .post-item { padding: 14px; background: var(--navy-deep); border-radius: 8px; margin-bottom: 8px; border-left: 3px solid var(--crimson-dark); }
+    .post-item.queued { border-left-color: var(--btc); }
     .post-info { flex: 1; }
     .post-content { margin-bottom: 6px; white-space: pre-wrap; }
     .post-meta { font-size: 0.8rem; color: #888; }
@@ -113,6 +116,32 @@
 
     .status-msg { margin-top: 8px; font-size: 0.85rem; }
 
+    /* Schedule mode toggle */
+    .schedule-toggle { display: flex; gap: 0; margin-bottom: 14px; border-radius: 6px; overflow: hidden; border: 1px solid #2a3550; }
+    .schedule-toggle button { flex: 1; padding: 10px; border: none; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: all 0.2s; background: var(--navy-deep); color: #888; }
+    .schedule-toggle button.active { background: var(--crimson); color: white; }
+    .schedule-toggle button:first-child.active { background: var(--btc); color: #1a1a2e; }
+
+    /* Queue slots */
+    .queue-account { margin-bottom: 20px; }
+    .queue-account-name { font-weight: 600; color: var(--crimson-light); font-size: 1rem; margin-bottom: 10px; }
+    .queue-slot { display: inline-flex; align-items: center; gap: 6px; background: var(--navy-deep); border: 1px solid #2a3550; border-radius: 8px; padding: 8px 14px; margin: 4px 6px 4px 0; font-size: 0.9rem; }
+    .queue-slot.disabled { opacity: 0.4; }
+    .queue-slot .time { color: var(--btc); font-weight: 600; font-family: monospace; }
+    .queue-slot button { background: none; border: none; cursor: pointer; font-size: 0.85rem; padding: 0 2px; }
+    .queue-slot .toggle-btn { color: #888; }
+    .queue-slot .delete-btn { color: var(--crimson); }
+    .queue-add-row { display: flex; gap: 6px; margin-top: 10px; align-items: center; }
+    .queue-add-row input { margin-bottom: 0; width: 120px; padding: 8px 10px; }
+    .queue-add-row select { margin-bottom: 0; width: auto; padding: 8px 10px; }
+
+    .queue-count { font-size: 0.8rem; color: #556; margin-top: 4px; }
+
+    /* History toggle */
+    .history-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .history-bar label { margin-bottom: 0; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+    .history-bar input[type="checkbox"] { width: auto; margin: 0; accent-color: var(--crimson); }
+
     .footer { text-align: center; margin-top: 40px; padding: 20px; color: #445; font-size: 0.8rem; border-top: 1px solid #1c2840; }
     .footer a { color: var(--crimson-light); text-decoration: none; }
     .footer a:hover { text-decoration: underline; }
@@ -131,6 +160,7 @@
     <div class="tabs">
       <button class="tab active" data-tab="compose">Compose</button>
       <button class="tab" data-tab="scheduled">Scheduled</button>
+      <button class="tab" data-tab="queues">Queues</button>
       <button class="tab" data-tab="accounts">Accounts</button>
     </div>
 
@@ -156,18 +186,45 @@
         <input type="url" id="post-image-url" placeholder="https://image.nostr.build/...">
         <p class="help-text">Select a file above and click "Upload to nostr.build", or paste any public image URL directly.</p>
 
-        <label for="post-schedule">Schedule Date & Time</label>
-        <input type="datetime-local" id="post-schedule">
+        <label>When to post</label>
+        <div class="schedule-toggle">
+          <button id="mode-queue" class="active" onclick="setScheduleMode('queue')">Add to Queue</button>
+          <button id="mode-schedule" onclick="setScheduleMode('schedule')">Specific Date/Time</button>
+        </div>
 
-        <button class="btn btn-primary" id="btn-schedule">Schedule Post</button>
+        <div id="schedule-datetime-section" style="display:none;">
+          <label for="post-schedule">Schedule Date & Time</label>
+          <input type="datetime-local" id="post-schedule">
+        </div>
+
+        <div id="queue-info">
+          <p class="help-text" style="margin-top:0;">Post will be added to the queue and sent at the next available queue slot for this account. Set up queue times in the Queues tab.</p>
+        </div>
+
+        <button class="btn btn-primary" id="btn-schedule">Add to Queue</button>
       </div>
     </div>
 
     <!-- SCHEDULED TAB -->
     <div class="panel" id="panel-scheduled">
       <div class="card">
-        <h2>Scheduled Posts</h2>
-        <div id="posts-list"><div class="empty">No posts scheduled yet</div></div>
+        <div class="history-bar">
+          <h2 style="margin-bottom:0;">Posts</h2>
+          <div style="display:flex;gap:12px;align-items:center;">
+            <label><input type="checkbox" id="show-history"> Show sent/failed</label>
+            <button class="btn btn-outline btn-sm" id="btn-clear-history" style="display:none;">Clear History</button>
+          </div>
+        </div>
+        <div id="posts-list"><div class="empty">No posts yet</div></div>
+      </div>
+    </div>
+
+    <!-- QUEUES TAB -->
+    <div class="panel" id="panel-queues">
+      <div class="card">
+        <h2>Queue Schedules</h2>
+        <p class="help-text" style="margin-top:-10px;">Set daily posting times per account. Queued posts are published in order (oldest first) at each time slot.</p>
+        <div id="queues-list"><div class="empty">Add an account first, then set up queue times here.</div></div>
       </div>
     </div>
 
@@ -176,7 +233,6 @@
       <div class="card">
         <h2>Add Account</h2>
 
-        <!-- Option 1: Amber / nsecBunker -->
         <div class="login-section">
           <h3>Amber / nsecBunker (NIP-46)</h3>
           <p class="help-text" style="margin-top:0;margin-bottom:14px;">
@@ -193,7 +249,6 @@
 
         <div class="or-divider">or</div>
 
-        <!-- Option 2: NIP-07 Extension -->
         <div class="login-section">
           <h3>Browser Extension (nos2x, Alby, etc.)</h3>
           <p class="help-text" style="margin-top:0;margin-bottom:14px;">
@@ -207,7 +262,6 @@
 
         <div class="or-divider">or</div>
 
-        <!-- Option 3: Manual Key -->
         <div class="login-section">
           <h3>Private Key (hex)</h3>
           <p class="help-text" style="margin-top:0;margin-bottom:14px;">
@@ -238,6 +292,11 @@
   </div>
 
   <script>
+    // --- State ---
+    let accountsData = [];
+    let queuesData = [];
+    let scheduleMode = 'queue'; // 'queue' or 'schedule'
+
     // --- Tabs ---
     document.querySelectorAll('.tab').forEach(tab => {
       tab.addEventListener('click', () => {
@@ -256,8 +315,15 @@
       setTimeout(() => el.remove(), 4200);
     }
 
-    // Track accounts data globally
-    let accountsData = [];
+    // --- Schedule Mode Toggle ---
+    function setScheduleMode(mode) {
+      scheduleMode = mode;
+      document.getElementById('mode-queue').classList.toggle('active', mode === 'queue');
+      document.getElementById('mode-schedule').classList.toggle('active', mode === 'schedule');
+      document.getElementById('schedule-datetime-section').style.display = mode === 'schedule' ? 'block' : 'none';
+      document.getElementById('queue-info').style.display = mode === 'queue' ? 'block' : 'none';
+      document.getElementById('btn-schedule').textContent = mode === 'queue' ? 'Add to Queue' : 'Schedule Post';
+    }
 
     // --- Accounts ---
     async function loadAccounts() {
@@ -350,7 +416,7 @@
       loadAccounts();
     }
 
-    // --- Amber / nsecBunker (NIP-46) Login ---
+    // --- Account Login Handlers ---
     document.getElementById('btn-login-bunker').addEventListener('click', async () => {
       const statusEl = document.getElementById('bunker-status');
       const name = document.getElementById('acc-name-bunker').value.trim();
@@ -377,6 +443,7 @@
           document.getElementById('acc-bunker-url').value = '';
           statusEl.innerHTML = '<span style="color:#27ae60;">Connected successfully!</span>';
           loadAccounts();
+          loadQueues();
         } else {
           const err = await res.json();
           statusEl.innerHTML = `<span style="color:#e74c3c;">${esc(err.error)}</span>`;
@@ -388,7 +455,6 @@
       btn.disabled = false;
     });
 
-    // --- NIP-07 Extension Login ---
     document.getElementById('btn-login-extension').addEventListener('click', async () => {
       const statusEl = document.getElementById('extension-status');
 
@@ -415,6 +481,7 @@
           document.getElementById('acc-name-ext').value = '';
           statusEl.innerHTML = '';
           loadAccounts();
+          loadQueues();
         } else {
           const err = await res.json();
           statusEl.innerHTML = `<span style="color:#e74c3c;">${esc(err.error)}</span>`;
@@ -424,7 +491,6 @@
       }
     });
 
-    // --- Manual Account Add ---
     document.getElementById('btn-add-account').addEventListener('click', async () => {
       const name = document.getElementById('acc-name').value.trim();
       const nsec_hex = document.getElementById('acc-nsec').value.trim();
@@ -448,6 +514,7 @@
         document.getElementById('acc-nsec').value = '';
         document.getElementById('acc-relays').value = '';
         loadAccounts();
+        loadQueues();
       } else {
         const err = await res.json();
         flash(err.error, 'error');
@@ -460,6 +527,7 @@
       flash('Account removed');
       loadAccounts();
       loadPosts();
+      loadQueues();
     }
 
     // --- Image Upload to nostr.build ---
@@ -507,20 +575,122 @@
       uploadBtn.disabled = false;
     });
 
+    // --- Queues ---
+    async function loadQueues() {
+      const res = await fetch('/api/queues');
+      queuesData = await res.json();
+
+      const list = document.getElementById('queues-list');
+
+      if (accountsData.length === 0) {
+        list.innerHTML = '<div class="empty">Add an account first, then set up queue times here.</div>';
+        return;
+      }
+
+      list.innerHTML = accountsData.map(a => {
+        const slots = queuesData.filter(q => q.account_id === a.id);
+        const slotsHtml = slots.length > 0
+          ? slots.map(s => `
+              <span class="queue-slot ${s.enabled ? '' : 'disabled'}">
+                <span class="time">${s.time_slot}</span>
+                <button class="toggle-btn" onclick="toggleSlot(${s.id}, ${s.enabled ? 0 : 1})" title="${s.enabled ? 'Disable' : 'Enable'}">
+                  ${s.enabled ? '&#x23F8;' : '&#x25B6;'}
+                </button>
+                <button class="delete-btn" onclick="deleteSlot(${s.id})" title="Remove">&times;</button>
+              </span>
+            `).join('')
+          : '<span style="color:#556;font-size:0.85rem;">No posting times set</span>';
+
+        // Count queued posts for this account
+        return `
+          <div class="queue-account">
+            <div class="queue-account-name">${esc(a.name)}</div>
+            <div>${slotsHtml}</div>
+            <div class="queue-add-row">
+              <input type="time" id="queue-time-${a.id}">
+              <button class="btn btn-primary btn-sm" onclick="addSlot(${a.id})">Add Time</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function addSlot(accountId) {
+      const input = document.getElementById('queue-time-' + accountId);
+      const time = input.value;
+      if (!time) return flash('Select a time first', 'error');
+
+      const res = await fetch('/api/queues', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: accountId, time_slot: time })
+      });
+
+      if (res.ok) {
+        flash('Queue time added');
+        input.value = '';
+        loadQueues();
+      } else {
+        const err = await res.json();
+        flash(err.error, 'error');
+      }
+    }
+
+    async function toggleSlot(id, enabled) {
+      await fetch('/api/queues/' + id, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+      loadQueues();
+    }
+
+    async function deleteSlot(id) {
+      if (!confirm('Remove this queue time?')) return;
+      await fetch('/api/queues/' + id, { method: 'DELETE' });
+      flash('Queue time removed');
+      loadQueues();
+    }
+
     // --- Posts ---
+    let showHistory = false;
+
+    document.getElementById('show-history').addEventListener('change', (e) => {
+      showHistory = e.target.checked;
+      document.getElementById('btn-clear-history').style.display = showHistory ? 'inline-flex' : 'none';
+      loadPosts();
+    });
+
+    document.getElementById('btn-clear-history').addEventListener('click', async () => {
+      if (!confirm('Delete all sent and failed posts from history?')) return;
+      await fetch('/api/posts/history/clear', { method: 'DELETE' });
+      flash('History cleared');
+      loadPosts();
+    });
+
     async function loadPosts() {
-      const res = await fetch('/api/posts');
+      const url = showHistory ? '/api/posts' : '/api/posts?status=pending';
+      const res = await fetch(url);
       const posts = await res.json();
 
       const list = document.getElementById('posts-list');
       if (posts.length === 0) {
-        list.innerHTML = '<div class="empty">No posts scheduled yet</div>';
+        list.innerHTML = `<div class="empty">${showHistory ? 'No posts yet' : 'No pending posts'}</div>`;
         return;
       }
 
       list.innerHTML = posts.map(p => {
-        const dt = new Date(p.scheduled_at + (p.scheduled_at.includes('Z') ? '' : 'Z'));
-        const timeStr = dt.toLocaleString();
+        const isQueued = p.is_queued === 1;
+        let timeStr;
+        if (isQueued && !p.scheduled_at) {
+          timeStr = 'Queued';
+        } else if (p.scheduled_at) {
+          const dt = new Date(p.scheduled_at + (p.scheduled_at.includes('Z') ? '' : 'Z'));
+          timeStr = dt.toLocaleString();
+        } else {
+          timeStr = 'No time set';
+        }
+
         const imgHtml = p.image_url
           ? `<img src="${esc(p.image_url)}" class="post-image" onerror="this.style.display='none'">`
           : '';
@@ -530,7 +700,7 @@
         const signColor = p.login_type === 'bunker' ? '#f59e0b' : '#8e44ad';
 
         return `
-          <div class="post-item">
+          <div class="post-item ${isQueued ? 'queued' : ''}">
             <div style="display:flex;justify-content:space-between;align-items:start;">
               <div class="post-info">
                 <div class="post-content">${esc(p.content)}</div>
@@ -538,6 +708,7 @@
                 <div class="post-meta">
                   <strong>${esc(p.account_name)}</strong> &middot;
                   <span class="status-${p.status}">${p.status.toUpperCase()}</span> &middot;
+                  ${isQueued && p.status === 'pending' ? '<span style="color:var(--btc);">Queued</span> &middot; ' : ''}
                   ${timeStr}
                   ${signLabel ? ` &middot; <span style="color:${signColor};">${signLabel}</span>` : ''}
                 </div>
@@ -559,20 +730,25 @@
     document.getElementById('btn-schedule').addEventListener('click', async () => {
       const account_id = document.getElementById('post-account').value;
       const content = document.getElementById('post-content').value.trim();
-      const scheduled_at = document.getElementById('post-schedule').value;
       const image_url = document.getElementById('post-image-url').value.trim();
 
       if (!account_id) return flash('Select an account first', 'error');
       if (!content) return flash('Write some content', 'error');
-      if (!scheduled_at) return flash('Pick a date and time', 'error');
 
-      const isoDate = new Date(scheduled_at).toISOString();
+      const isQueue = scheduleMode === 'queue';
+      let scheduled_at = null;
+
+      if (!isQueue) {
+        const dt = document.getElementById('post-schedule').value;
+        if (!dt) return flash('Pick a date and time', 'error');
+        scheduled_at = new Date(dt).toISOString();
+      }
+
       const account = accountsData.find(a => a.id === parseInt(account_id));
-
       let signedEvent = null;
 
-      // For extension accounts, sign the event client-side via NIP-07
-      if (account && account.login_type === 'extension') {
+      // For extension accounts with specific schedule, sign client-side
+      if (account && account.login_type === 'extension' && !isQueue) {
         if (!window.nostr) {
           return flash('Nostr extension not available. Cannot sign event.', 'error');
         }
@@ -585,7 +761,7 @@
 
         const eventTemplate = {
           kind: 1,
-          created_at: Math.floor(new Date(scheduled_at).getTime() / 1000),
+          created_at: Math.floor(new Date(document.getElementById('post-schedule').value).getTime() / 1000),
           tags,
           content: fullContent,
         };
@@ -598,13 +774,19 @@
         }
       }
 
-      // Bunker accounts sign server-side at publish time, no pre-signing needed
+      // Extension + queue: warn that signing happens at publish time (requires extension to be open)
+      if (account && account.login_type === 'extension' && isQueue) {
+        // Can't pre-sign queued posts for extensions (no timestamp yet).
+        // They'll fail at publish time. Warn the user.
+        flash('Note: Extension accounts require the browser to be open with the extension when the queued post publishes.', 'error');
+      }
 
       const body = {
         account_id: parseInt(account_id),
         content,
-        scheduled_at: isoDate,
+        scheduled_at,
         image_url: image_url || undefined,
+        is_queued: isQueue,
         signed_event: signedEvent ? JSON.stringify(signedEvent) : undefined,
       };
 
@@ -615,7 +797,7 @@
       });
 
       if (res.ok) {
-        flash('Post scheduled!');
+        flash(isQueue ? 'Post added to queue!' : 'Post scheduled!');
         document.getElementById('post-content').value = '';
         document.getElementById('post-image-url').value = '';
         document.getElementById('post-image').value = '';
@@ -631,7 +813,7 @@
     });
 
     async function deletePost(id) {
-      if (!confirm('Delete this scheduled post?')) return;
+      if (!confirm('Delete this post?')) return;
       await fetch('/api/posts/' + id, { method: 'DELETE' });
       flash('Post deleted');
       loadPosts();
@@ -657,11 +839,11 @@
     }
 
     // Initial load
-    loadAccounts();
+    loadAccounts().then(() => loadQueues());
     loadPosts();
 
-    // Auto-refresh posts every 30s
-    setInterval(loadPosts, 30000);
+    // Auto-refresh every 30s
+    setInterval(() => { loadPosts(); loadQueues(); }, 30000);
   </script>
 </body>
 </html>

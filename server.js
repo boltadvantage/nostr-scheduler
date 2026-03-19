@@ -39,13 +39,12 @@ const db = new Database(path.join(__dirname, 'nostr-scheduler.db'));
 db.pragma('journal_mode = WAL');
 
 // --- Database Migration ---
-// Check if we need to migrate (old schema has nsec_hex NOT NULL)
 const tableInfo = db.pragma('table_info(accounts)');
 const nsecCol = tableInfo.find(c => c.name === 'nsec_hex');
 const hasBunkerCol = tableInfo.find(c => c.name === 'bunker_url');
 
 if (nsecCol && nsecCol.notnull === 1) {
-  console.log('Migrating accounts table: making nsec_hex nullable, adding bunker columns...');
+  console.log('Migrating accounts table...');
   db.exec(`
     CREATE TABLE accounts_new (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,9 +67,44 @@ if (nsecCol && nsecCol.notnull === 1) {
   `);
   console.log('Migration complete.');
 } else if (!hasBunkerCol && tableInfo.length > 0) {
-  // Table exists but missing bunker columns
   try { db.exec(`ALTER TABLE accounts ADD COLUMN bunker_url TEXT`); } catch (e) {}
   try { db.exec(`ALTER TABLE accounts ADD COLUMN bunker_client_key TEXT`); } catch (e) {}
+}
+
+// Migrate scheduled_posts: make scheduled_at nullable, add is_queued
+const postInfo = db.pragma('table_info(scheduled_posts)');
+const scheduledAtCol = postInfo.find(c => c.name === 'scheduled_at');
+const hasIsQueued = postInfo.find(c => c.name === 'is_queued');
+
+if (scheduledAtCol && scheduledAtCol.notnull === 1) {
+  console.log('Migrating scheduled_posts table...');
+  db.exec(`
+    CREATE TABLE scheduled_posts_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id INTEGER NOT NULL,
+      content TEXT NOT NULL,
+      image_path TEXT,
+      image_url TEXT,
+      scheduled_at DATETIME,
+      is_queued INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending',
+      event_id TEXT,
+      signed_event TEXT,
+      error TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (account_id) REFERENCES accounts(id)
+    );
+    INSERT INTO scheduled_posts_new (id, account_id, content, image_path, image_url, scheduled_at, status, event_id, signed_event, error, created_at)
+      SELECT id, account_id, content, image_path, image_url, scheduled_at, status, event_id,
+        CASE WHEN EXISTS(SELECT 1 FROM pragma_table_info('scheduled_posts') WHERE name='signed_event') THEN signed_event ELSE NULL END,
+        error, created_at
+      FROM scheduled_posts;
+    DROP TABLE scheduled_posts;
+    ALTER TABLE scheduled_posts_new RENAME TO scheduled_posts;
+  `);
+  console.log('Posts migration complete.');
+} else if (!hasIsQueued && postInfo.length > 0) {
+  try { db.exec(`ALTER TABLE scheduled_posts ADD COLUMN is_queued INTEGER NOT NULL DEFAULT 0`); } catch (e) {}
 }
 
 // Create tables if they don't exist at all
@@ -93,7 +127,8 @@ db.exec(`
     content TEXT NOT NULL,
     image_path TEXT,
     image_url TEXT,
-    scheduled_at DATETIME NOT NULL,
+    scheduled_at DATETIME,
+    is_queued INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'pending',
     event_id TEXT,
     signed_event TEXT,
@@ -101,10 +136,21 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (account_id) REFERENCES accounts(id)
   );
+
+  CREATE TABLE IF NOT EXISTS queue_schedules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL,
+    time_slot TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_fired_date TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (account_id) REFERENCES accounts(id)
+  );
 `);
 
-// Ensure signed_event column exists on scheduled_posts
+// Ensure columns exist (safety net)
 try { db.exec(`ALTER TABLE scheduled_posts ADD COLUMN signed_event TEXT`); } catch (e) {}
+try { db.exec(`ALTER TABLE scheduled_posts ADD COLUMN is_queued INTEGER NOT NULL DEFAULT 0`); } catch (e) {}
 
 // Middleware
 app.use(express.json({ limit: '10mb' }));
@@ -130,17 +176,14 @@ app.post('/api/accounts', async (req, res) => {
     let bunkerClientKeyHex = null;
 
     if (type === 'bunker') {
-      // NIP-46 nsecBunker (Amber, etc.)
       if (!bunker_url) return res.status(400).json({ error: 'Bunker URL required' });
 
       const bp = await parseBunkerInput(bunker_url);
       if (!bp) return res.status(400).json({ error: 'Invalid bunker URL. Expected format: bunker://pubkey?relay=wss://...' });
 
-      // Generate a client keypair for bunker communication
       const clientSk = generateSecretKey();
       bunkerClientKeyHex = bytesToHex(clientSk);
 
-      // Test the connection and get the actual signer pubkey
       const signer = BunkerSigner.fromBunker(clientSk, bp);
       try {
         await signer.connect();
@@ -153,7 +196,6 @@ app.post('/api/accounts', async (req, res) => {
         });
       }
 
-      // Use relays from the bunker pointer if none provided
       const relayList = relays || JSON.stringify(bp.relays);
 
       const result = db.prepare(
@@ -163,11 +205,9 @@ app.post('/api/accounts', async (req, res) => {
       return res.json({ id: result.lastInsertRowid, name, npub_hex: pubkey, relays: relayList, login_type: type });
 
     } else if (type === 'extension') {
-      // NIP-07 browser extension
       if (!npub_hex) return res.status(400).json({ error: 'Public key required for extension login' });
       pubkey = npub_hex;
     } else {
-      // Direct private key
       if (!nsec_hex) return res.status(400).json({ error: 'Private key required' });
       const skBytes = hexToBytes(nsec_hex);
       pubkey = getPublicKey(skBytes);
@@ -194,7 +234,48 @@ app.put('/api/accounts/:id/relays', (req, res) => {
 
 app.delete('/api/accounts/:id', (req, res) => {
   db.prepare(`DELETE FROM scheduled_posts WHERE account_id = ? AND status = 'pending'`).run(req.params.id);
+  db.prepare('DELETE FROM queue_schedules WHERE account_id = ?').run(req.params.id);
   db.prepare('DELETE FROM accounts WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// --- Queue Schedule Routes ---
+
+app.get('/api/queues', (req, res) => {
+  const queues = db.prepare(`
+    SELECT q.*, a.name as account_name
+    FROM queue_schedules q
+    JOIN accounts a ON q.account_id = a.id
+    ORDER BY q.account_id, q.time_slot
+  `).all();
+  res.json(queues);
+});
+
+app.post('/api/queues', (req, res) => {
+  const { account_id, time_slot } = req.body;
+  if (!account_id || !time_slot) return res.status(400).json({ error: 'account_id and time_slot required' });
+
+  // Validate time format HH:MM
+  if (!/^\d{2}:\d{2}$/.test(time_slot)) return res.status(400).json({ error: 'time_slot must be HH:MM format' });
+
+  // Check for duplicate
+  const existing = db.prepare('SELECT id FROM queue_schedules WHERE account_id = ? AND time_slot = ?').get(account_id, time_slot);
+  if (existing) return res.status(400).json({ error: 'This time slot already exists for this account' });
+
+  const result = db.prepare('INSERT INTO queue_schedules (account_id, time_slot) VALUES (?, ?)').run(account_id, time_slot);
+  res.json({ id: result.lastInsertRowid });
+});
+
+app.put('/api/queues/:id', (req, res) => {
+  const { enabled } = req.body;
+  if (enabled !== undefined) {
+    db.prepare('UPDATE queue_schedules SET enabled = ? WHERE id = ?').run(enabled ? 1 : 0, req.params.id);
+  }
+  res.json({ ok: true });
+});
+
+app.delete('/api/queues/:id', (req, res) => {
+  db.prepare('DELETE FROM queue_schedules WHERE id = ?').run(req.params.id);
   res.json({ ok: true });
 });
 
@@ -219,20 +300,15 @@ app.post('/api/upload-image', upload.single('image'), async (req, res) => {
 
     const response = await fetch('https://nostr.build/api/v2/upload/files', {
       method: 'POST',
-      headers: {
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-      },
+      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
       body: body,
     });
 
     const result = await response.json();
-
-    // Clean up local file after upload
     fs.unlinkSync(filePath);
 
     if (result.status === 'success' && result.data && result.data.length > 0) {
-      const imageUrl = result.data[0].url;
-      res.json({ url: imageUrl });
+      res.json({ url: result.data[0].url });
     } else {
       res.status(500).json({ error: 'Upload failed: ' + JSON.stringify(result) });
     }
@@ -244,24 +320,37 @@ app.post('/api/upload-image', upload.single('image'), async (req, res) => {
 // --- Post Routes ---
 
 app.get('/api/posts', (req, res) => {
-  const posts = db.prepare(`
+  const status = req.query.status; // 'pending', 'sent', 'failed', or undefined for all
+  let query = `
     SELECT p.*, a.name as account_name, a.login_type
     FROM scheduled_posts p
     JOIN accounts a ON p.account_id = a.id
-    ORDER BY p.scheduled_at ASC
-  `).all();
+  `;
+  const params = [];
+
+  if (status) {
+    query += ` WHERE p.status = ?`;
+    params.push(status);
+  }
+
+  query += ` ORDER BY CASE WHEN p.is_queued = 1 THEN 1 ELSE 0 END, p.scheduled_at ASC, p.created_at ASC`;
+
+  const posts = db.prepare(query).all(...params);
   res.json(posts);
 });
 
 app.post('/api/posts', (req, res) => {
-  const { account_id, content, scheduled_at, image_url, signed_event } = req.body;
-  if (!account_id || !content || !scheduled_at) {
-    return res.status(400).json({ error: 'account_id, content, and scheduled_at required' });
+  const { account_id, content, scheduled_at, image_url, signed_event, is_queued } = req.body;
+  if (!account_id || !content) {
+    return res.status(400).json({ error: 'account_id and content required' });
+  }
+  if (!is_queued && !scheduled_at) {
+    return res.status(400).json({ error: 'scheduled_at required for non-queued posts' });
   }
 
   const result = db.prepare(
-    'INSERT INTO scheduled_posts (account_id, content, image_url, scheduled_at, signed_event) VALUES (?, ?, ?, ?, ?)'
-  ).run(account_id, content, image_url || null, scheduled_at, signed_event || null);
+    'INSERT INTO scheduled_posts (account_id, content, image_url, scheduled_at, is_queued, signed_event) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(account_id, content, image_url || null, scheduled_at || null, is_queued ? 1 : 0, signed_event || null);
 
   res.json({ id: result.lastInsertRowid });
 });
@@ -285,6 +374,12 @@ app.post('/api/posts/:id/send-now', async (req, res) => {
   }
 });
 
+// Clear sent/failed posts
+app.delete('/api/posts/history/clear', (req, res) => {
+  db.prepare(`DELETE FROM scheduled_posts WHERE status IN ('sent', 'failed')`).run();
+  res.json({ ok: true });
+});
+
 // --- Publishing Logic ---
 
 async function publishPost(postId) {
@@ -306,11 +401,9 @@ async function publishPost(postId) {
   if (post.image_url) tags.push(['r', post.image_url]);
 
   if (post.signed_event) {
-    // Pre-signed event from NIP-07 browser extension
     signedEvent = JSON.parse(post.signed_event);
 
   } else if (post.login_type === 'bunker' && post.bunker_url && post.bunker_client_key) {
-    // NIP-46: Sign via Amber / nsecBunker
     console.log(`Signing post ${postId} via bunker...`);
     const bp = await parseBunkerInput(post.bunker_url);
     if (!bp) {
@@ -324,14 +417,12 @@ async function publishPost(postId) {
 
     try {
       await signer.connect();
-
       const eventTemplate = {
         kind: 1,
         created_at: Math.floor(Date.now() / 1000),
         tags,
         content,
       };
-
       signedEvent = await signer.signEvent(eventTemplate);
       await signer.close();
     } catch (e) {
@@ -342,7 +433,6 @@ async function publishPost(postId) {
     }
 
   } else if (post.nsec_hex) {
-    // Server-side signing with stored key
     const sk = hexToBytes(post.nsec_hex);
     const eventTemplate = {
       kind: 1,
@@ -389,13 +479,43 @@ async function publishPost(postId) {
 
 // --- Scheduler: check every 30 seconds ---
 cron.schedule('*/30 * * * * *', () => {
-  const now = new Date().toISOString();
+  const now = new Date();
+
+  // 1. Check time-specific scheduled posts
   const duePosts = db.prepare(
-    `SELECT id FROM scheduled_posts WHERE status = 'pending' AND scheduled_at <= ?`
-  ).all(now);
+    `SELECT id FROM scheduled_posts WHERE status = 'pending' AND is_queued = 0 AND scheduled_at IS NOT NULL AND scheduled_at <= ?`
+  ).all(now.toISOString());
 
   for (const post of duePosts) {
     publishPost(post.id).catch(e => console.error(`Scheduler error for post ${post.id}:`, e.message));
+  }
+
+  // 2. Check queue schedules
+  const todayStr = now.toISOString().slice(0, 10); // YYYY-MM-DD
+  const currentHH = String(now.getHours()).padStart(2, '0');
+  const currentMM = String(now.getMinutes()).padStart(2, '0');
+  const currentTime = `${currentHH}:${currentMM}`;
+
+  const activeSlots = db.prepare(
+    `SELECT * FROM queue_schedules WHERE enabled = 1 AND (last_fired_date IS NULL OR last_fired_date < ?)`
+  ).all(todayStr);
+
+  for (const slot of activeSlots) {
+    // Fire if current time >= slot time (slot fires once per day, at or after the slot time)
+    if (currentTime >= slot.time_slot) {
+      // Find the oldest queued pending post for this account
+      const nextPost = db.prepare(
+        `SELECT id FROM scheduled_posts WHERE account_id = ? AND is_queued = 1 AND status = 'pending' ORDER BY created_at ASC LIMIT 1`
+      ).get(slot.account_id);
+
+      if (nextPost) {
+        console.log(`Queue firing: slot ${slot.time_slot} for account ${slot.account_id}, post ${nextPost.id}`);
+        publishPost(nextPost.id).catch(e => console.error(`Queue error for post ${nextPost.id}:`, e.message));
+      }
+
+      // Mark slot as fired today regardless of whether there was a post
+      db.prepare('UPDATE queue_schedules SET last_fired_date = ? WHERE id = ?').run(todayStr, slot.id);
+    }
   }
 });
 
