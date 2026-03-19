@@ -279,12 +279,72 @@ app.delete('/api/queues/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// --- Image Upload to nostr.build ---
+// --- Image Upload to nostr.build (NIP-98 authenticated) ---
+
+// Build a NIP-98 auth token for nostr.build using a private key
+function buildNip98Token(sk, url, method) {
+  const eventTemplate = {
+    kind: 27235,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [
+      ['u', url],
+      ['method', method],
+    ],
+    content: '',
+  };
+  const signed = finalizeEvent(eventTemplate, sk);
+  return Buffer.from(JSON.stringify(signed)).toString('base64');
+}
 
 app.post('/api/upload-image', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No image file provided' });
 
+  const accountId = req.body.account_id;
+  // If a pre-signed NIP-98 token was provided (from extension signing), use it
+  const clientNip98Token = req.body.nip98_token;
+
   try {
+    let nip98Token = clientNip98Token;
+
+    // If no client-provided token, sign server-side using the account's key
+    if (!nip98Token && accountId) {
+      const account = db.prepare('SELECT nsec_hex, login_type, bunker_url, bunker_client_key FROM accounts WHERE id = ?').get(accountId);
+
+      if (account && account.nsec_hex) {
+        const sk = hexToBytes(account.nsec_hex);
+        nip98Token = buildNip98Token(sk, 'https://nostr.build/api/v2/upload/files', 'POST');
+      } else if (account && account.login_type === 'bunker' && account.bunker_url && account.bunker_client_key) {
+        // Sign via bunker
+        const bp = await parseBunkerInput(account.bunker_url);
+        if (bp) {
+          const clientSk = hexToBytes(account.bunker_client_key);
+          const signer = BunkerSigner.fromBunker(clientSk, bp);
+          try {
+            await signer.connect();
+            const eventTemplate = {
+              kind: 27235,
+              created_at: Math.floor(Date.now() / 1000),
+              tags: [
+                ['u', 'https://nostr.build/api/v2/upload/files'],
+                ['method', 'POST'],
+              ],
+              content: '',
+            };
+            const signed = await signer.signEvent(eventTemplate);
+            await signer.close();
+            nip98Token = Buffer.from(JSON.stringify(signed)).toString('base64');
+          } catch (e) {
+            try { await signer.close(); } catch (x) {}
+            return res.status(400).json({ error: 'Bunker signing failed for upload auth: ' + e.message });
+          }
+        }
+      }
+    }
+
+    if (!nip98Token) {
+      return res.status(400).json({ error: 'No account selected or account cannot sign NIP-98 auth. Select an account with a key or bunker.' });
+    }
+
     const filePath = path.join(uploadsDir, req.file.filename);
     const fileBuffer = fs.readFileSync(filePath);
 
@@ -300,7 +360,10 @@ app.post('/api/upload-image', upload.single('image'), async (req, res) => {
 
     const response = await fetch('https://nostr.build/api/v2/upload/files', {
       method: 'POST',
-      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Authorization': `Nostr ${nip98Token}`,
+      },
       body: body,
     });
 

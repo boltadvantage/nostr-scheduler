@@ -551,11 +551,46 @@
       const file = imageInput.files[0];
       if (!file) return;
 
+      const accountId = document.getElementById('post-account').value;
+      if (!accountId) return flash('Select an account first — needed for nostr.build auth', 'error');
+
+      const account = accountsData.find(a => a.id === parseInt(accountId));
+
       uploadBtn.disabled = true;
       progressEl.innerHTML = '<span class="upload-progress">Uploading to nostr.build...</span>';
 
       const formData = new FormData();
       formData.append('image', file);
+      formData.append('account_id', accountId);
+
+      // For extension accounts, sign NIP-98 client-side
+      if (account && account.login_type === 'extension') {
+        if (!window.nostr) {
+          progressEl.innerHTML = '<span style="color:#e74c3c;font-size:0.85rem;">Nostr extension not available for signing upload auth.</span>';
+          uploadBtn.disabled = false;
+          return;
+        }
+        try {
+          progressEl.innerHTML = '<span class="upload-progress">Signing auth with extension...</span>';
+          const authEvent = {
+            kind: 27235,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: [
+              ['u', 'https://nostr.build/api/v2/upload/files'],
+              ['method', 'POST'],
+            ],
+            content: '',
+          };
+          const signed = await window.nostr.signEvent(authEvent);
+          const token = btoa(JSON.stringify(signed));
+          formData.append('nip98_token', token);
+          progressEl.innerHTML = '<span class="upload-progress">Uploading to nostr.build...</span>';
+        } catch (e) {
+          progressEl.innerHTML = `<span style="color:#e74c3c;font-size:0.85rem;">Extension signing failed: ${esc(e.message)}</span>`;
+          uploadBtn.disabled = false;
+          return;
+        }
+      }
 
       try {
         const res = await fetch('/api/upload-image', { method: 'POST', body: formData });
