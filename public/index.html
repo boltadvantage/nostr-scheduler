@@ -831,26 +831,9 @@
 
       // For extension accounts with specific schedule, sign client-side
       if (account && account.login_type === 'extension' && !isQueue) {
-        if (!window.nostr) {
-          return flash('Nostr extension not available. Cannot sign event.', 'error');
-        }
-
-        let fullContent = content;
-        if (image_url) fullContent += '\n' + image_url;
-
-        const tags = [];
-        if (image_url) tags.push(['r', image_url]);
-
-        const eventTemplate = {
-          kind: 1,
-          created_at: Math.floor(new Date(document.getElementById('post-schedule').value).getTime() / 1000),
-          tags,
-          content: fullContent,
-        };
-
         try {
           flash('Requesting signature from extension...');
-          signedEvent = await window.nostr.signEvent(eventTemplate);
+          signedEvent = await signForExtension(content, image_url, new Date(document.getElementById('post-schedule').value).getTime());
         } catch (e) {
           return flash('Extension signing failed: ' + e.message, 'error');
         }
@@ -880,12 +863,7 @@
 
       if (res.ok) {
         flash(isQueue ? 'Post added to queue!' : 'Post scheduled!');
-        document.getElementById('post-content').value = '';
-        document.getElementById('post-image-url').value = '';
-        document.getElementById('post-image').value = '';
-        document.getElementById('image-preview-container').innerHTML = '';
-        document.getElementById('upload-progress').innerHTML = '';
-        uploadBtn.disabled = true;
+        clearComposeForm();
         loadPosts();
         document.querySelector('[data-tab="scheduled"]').click();
       } else {
@@ -911,12 +889,7 @@
 
       if (res.ok) {
         flash('Draft saved!');
-        document.getElementById('post-content').value = '';
-        document.getElementById('post-image-url').value = '';
-        document.getElementById('post-image').value = '';
-        document.getElementById('image-preview-container').innerHTML = '';
-        document.getElementById('upload-progress').innerHTML = '';
-        uploadBtn.disabled = true;
+        clearComposeForm();
         loadDrafts();
         document.querySelector('[data-tab="drafts"]').click();
       } else {
@@ -949,6 +922,45 @@
       const div = document.createElement('div');
       div.textContent = str;
       return div.innerHTML;
+    }
+
+    function clearComposeForm() {
+      document.getElementById('post-content').value = '';
+      document.getElementById('post-image-url').value = '';
+      document.getElementById('post-image').value = '';
+      document.getElementById('image-preview-container').innerHTML = '';
+      document.getElementById('upload-progress').innerHTML = '';
+      uploadBtn.disabled = true;
+    }
+
+    function getDraftFields(id) {
+      return {
+        content: document.getElementById('draft-content-' + id).value.trim(),
+        image_url: document.getElementById('draft-image-' + id).value.trim(),
+        account_id: parseInt(document.getElementById('draft-account-' + id).value),
+      };
+    }
+
+    async function updatePost(id, data) {
+      return fetch('/api/posts/' + id, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+    }
+
+    async function signForExtension(content, image_url, timestamp) {
+      if (!window.nostr) throw new Error('Nostr extension not available');
+      let fullContent = content;
+      if (image_url) fullContent += '\n' + image_url;
+      const tags = [];
+      if (image_url) tags.push(['r', image_url]);
+      return window.nostr.signEvent({
+        kind: 1,
+        created_at: Math.floor(timestamp / 1000),
+        tags,
+        content: fullContent,
+      });
     }
 
     // --- Drafts ---
@@ -999,71 +1011,39 @@
     }
 
     async function saveDraft(id) {
-      const content = document.getElementById('draft-content-' + id).value.trim();
-      const image_url = document.getElementById('draft-image-' + id).value.trim();
-      const account_id = parseInt(document.getElementById('draft-account-' + id).value);
-
-      if (!content) return flash('Content cannot be empty', 'error');
-
-      await fetch('/api/posts/' + id, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, image_url, account_id })
-      });
+      const fields = getDraftFields(id);
+      if (!fields.content) return flash('Content cannot be empty', 'error');
+      await updatePost(id, fields);
       flash('Draft saved');
       loadDrafts();
     }
 
     async function promoteDraft(id, mode) {
-      const content = document.getElementById('draft-content-' + id).value.trim();
-      const image_url = document.getElementById('draft-image-' + id).value.trim();
-      const account_id = parseInt(document.getElementById('draft-account-' + id).value);
-
-      if (!content) return flash('Content cannot be empty', 'error');
+      const fields = getDraftFields(id);
+      if (!fields.content) return flash('Content cannot be empty', 'error');
 
       if (mode === 'queue') {
-        await fetch('/api/posts/' + id, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content, image_url, account_id, status: 'pending', is_queued: 1 })
-        });
+        await updatePost(id, { ...fields, status: 'pending', is_queued: 1 });
         flash('Draft added to queue!');
       } else {
         const dt = prompt('Enter date/time (YYYY-MM-DD HH:MM):');
         if (!dt) return;
-        const scheduled_at = new Date(dt).toISOString();
-        if (isNaN(new Date(dt).getTime())) return flash('Invalid date/time', 'error');
+        const parsed = new Date(dt);
+        if (isNaN(parsed.getTime())) return flash('Invalid date/time', 'error');
 
-        const account = accountsData.find(a => a.id === account_id);
-        let signedEvent = null;
+        const body = { ...fields, status: 'pending', is_queued: 0, scheduled_at: parsed.toISOString() };
 
-        // Extension accounts need client-side signing
+        const account = accountsData.find(a => a.id === fields.account_id);
         if (account && account.login_type === 'extension' && window.nostr) {
-          let fullContent = content;
-          if (image_url) fullContent += '\n' + image_url;
-          const tags = [];
-          if (image_url) tags.push(['r', image_url]);
-
           try {
-            signedEvent = await window.nostr.signEvent({
-              kind: 1,
-              created_at: Math.floor(new Date(dt).getTime() / 1000),
-              tags,
-              content: fullContent,
-            });
+            const signed = await signForExtension(fields.content, fields.image_url, parsed.getTime());
+            body.signed_event = JSON.stringify(signed);
           } catch (e) {
             return flash('Extension signing failed: ' + e.message, 'error');
           }
         }
 
-        const body = { content, image_url, account_id, status: 'pending', is_queued: 0, scheduled_at };
-        if (signedEvent) body.signed_event = JSON.stringify(signedEvent);
-
-        await fetch('/api/posts/' + id, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
-        });
+        await updatePost(id, body);
         flash('Draft scheduled!');
       }
       loadDrafts();
@@ -1071,20 +1051,11 @@
     }
 
     async function sendDraftNow(id) {
-      const content = document.getElementById('draft-content-' + id).value.trim();
-      const image_url = document.getElementById('draft-image-' + id).value.trim();
-      const account_id = parseInt(document.getElementById('draft-account-' + id).value);
-
-      if (!content) return flash('Content cannot be empty', 'error');
+      const fields = getDraftFields(id);
+      if (!fields.content) return flash('Content cannot be empty', 'error');
       if (!confirm('Send this draft now?')) return;
 
-      // Save edits, promote to pending, then send
-      await fetch('/api/posts/' + id, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, image_url, account_id, status: 'pending', is_queued: 0 })
-      });
-
+      await updatePost(id, { ...fields, status: 'pending', is_queued: 0 });
       const res = await fetch('/api/posts/' + id + '/send-now', { method: 'POST' });
       if (res.ok) {
         flash('Post sent!');

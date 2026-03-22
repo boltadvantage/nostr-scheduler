@@ -23,6 +23,7 @@ function bytesToHex(bytes) {
 
 const app = express();
 const PORT = parseInt(process.env.PORT, 10) || 3847;
+const DEFAULT_RELAYS = '["wss://relay.damus.io","wss://nos.lol","wss://relay.nostr.band"]';
 
 // Ensure uploads directory exists
 const uploadsDir = path.join(__dirname, 'uploads');
@@ -158,10 +159,6 @@ db.exec(`
   );
 `);
 
-// Ensure columns exist (safety net)
-try { db.exec(`ALTER TABLE scheduled_posts ADD COLUMN signed_event TEXT`); } catch (e) {}
-try { db.exec(`ALTER TABLE scheduled_posts ADD COLUMN is_queued INTEGER NOT NULL DEFAULT 0`); } catch (e) {}
-
 // Middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -223,7 +220,7 @@ app.post('/api/accounts', async (req, res) => {
       pubkey = getPublicKey(skBytes);
     }
 
-    const relayList = relays || '["wss://relay.damus.io","wss://nos.lol","wss://relay.nostr.band"]';
+    const relayList = relays || DEFAULT_RELAYS;
 
     const result = db.prepare(
       'INSERT INTO accounts (name, nsec_hex, npub_hex, relays, login_type) VALUES (?, ?, ?, ?, ?)'
@@ -291,19 +288,21 @@ app.delete('/api/queues/:id', (req, res) => {
 
 // --- Image Upload to nostr.build (NIP-98 authenticated) ---
 
-// Build a NIP-98 auth token for nostr.build using a private key
-function buildNip98Token(sk, url, method) {
-  const eventTemplate = {
+function nip98EventTemplate(url, method) {
+  return {
     kind: 27235,
     created_at: Math.floor(Date.now() / 1000),
-    tags: [
-      ['u', url],
-      ['method', method],
-    ],
+    tags: [['u', url], ['method', method]],
     content: '',
   };
-  const signed = finalizeEvent(eventTemplate, sk);
-  return Buffer.from(JSON.stringify(signed)).toString('base64');
+}
+
+function encodeNip98Token(signedEvent) {
+  return Buffer.from(JSON.stringify(signedEvent)).toString('base64');
+}
+
+function buildNip98Token(sk, url, method) {
+  return encodeNip98Token(finalizeEvent(nip98EventTemplate(url, method), sk));
 }
 
 app.post('/api/upload-image', upload.single('image'), async (req, res) => {
@@ -324,25 +323,15 @@ app.post('/api/upload-image', upload.single('image'), async (req, res) => {
         const sk = hexToBytes(account.nsec_hex);
         nip98Token = buildNip98Token(sk, 'https://nostr.build/api/v2/upload/files', 'POST');
       } else if (account && account.login_type === 'bunker' && account.bunker_url && account.bunker_client_key) {
-        // Sign via bunker
         const bp = await parseBunkerInput(account.bunker_url);
         if (bp) {
           const clientSk = hexToBytes(account.bunker_client_key);
           const signer = BunkerSigner.fromBunker(clientSk, bp);
           try {
             await signer.connect();
-            const eventTemplate = {
-              kind: 27235,
-              created_at: Math.floor(Date.now() / 1000),
-              tags: [
-                ['u', 'https://nostr.build/api/v2/upload/files'],
-                ['method', 'POST'],
-              ],
-              content: '',
-            };
-            const signed = await signer.signEvent(eventTemplate);
+            const signed = await signer.signEvent(nip98EventTemplate('https://nostr.build/api/v2/upload/files', 'POST'));
             await signer.close();
-            nip98Token = Buffer.from(JSON.stringify(signed)).toString('base64');
+            nip98Token = encodeNip98Token(signed);
           } catch (e) {
             try { await signer.close(); } catch (x) {}
             return res.status(400).json({ error: 'Bunker signing failed for upload auth: ' + e.message });
@@ -432,11 +421,6 @@ app.post('/api/posts', (req, res) => {
 });
 
 app.delete('/api/posts/:id', (req, res) => {
-  const post = db.prepare('SELECT * FROM scheduled_posts WHERE id = ?').get(req.params.id);
-  if (post && post.image_path) {
-    const imgFile = path.join(uploadsDir, post.image_path);
-    if (fs.existsSync(imgFile)) fs.unlinkSync(imgFile);
-  }
   db.prepare(`DELETE FROM scheduled_posts WHERE id = ? AND status IN ('pending', 'draft')`).run(req.params.id);
   res.json({ ok: true });
 });
@@ -456,9 +440,8 @@ app.delete('/api/posts/history/clear', (req, res) => {
   res.json({ ok: true });
 });
 
-// --- Draft Routes ---
+// --- Update Post (edit drafts, promote to queue/schedule) ---
 
-// Promote a draft to queued or scheduled
 app.put('/api/posts/:id', (req, res) => {
   const post = db.prepare('SELECT * FROM scheduled_posts WHERE id = ?').get(req.params.id);
   if (!post) return res.status(404).json({ error: 'Post not found' });
