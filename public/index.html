@@ -216,7 +216,10 @@
           <p class="help-text" style="margin-top:0;">Post will be added to the queue and sent at the next available queue slot for this account. Set up queue times in the Queues tab.</p>
         </div>
 
-        <button class="btn btn-primary" id="btn-schedule">Add to Queue</button>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-schedule">Add to Queue</button>
+          <button class="btn btn-outline" id="btn-save-draft">Save as Draft</button>
+        </div>
       </div>
     </div>
 
@@ -891,6 +894,37 @@
       }
     });
 
+    // Save as Draft from Compose tab
+    document.getElementById('btn-save-draft').addEventListener('click', async () => {
+      const account_id = document.getElementById('post-account').value;
+      const content = document.getElementById('post-content').value.trim();
+      const image_url = document.getElementById('post-image-url').value.trim();
+
+      if (!account_id) return flash('Select an account first', 'error');
+      if (!content) return flash('Write some content', 'error');
+
+      const res = await fetch('/api/posts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_id: parseInt(account_id), content, image_url: image_url || undefined, is_queued: true, status: 'draft' })
+      });
+
+      if (res.ok) {
+        flash('Draft saved!');
+        document.getElementById('post-content').value = '';
+        document.getElementById('post-image-url').value = '';
+        document.getElementById('post-image').value = '';
+        document.getElementById('image-preview-container').innerHTML = '';
+        document.getElementById('upload-progress').innerHTML = '';
+        uploadBtn.disabled = true;
+        loadDrafts();
+        document.querySelector('[data-tab="drafts"]').click();
+      } else {
+        const err = await res.json();
+        flash(err.error, 'error');
+      }
+    });
+
     async function deletePost(id) {
       if (!confirm('Delete this post?')) return;
       await fetch('/api/posts/' + id, { method: 'DELETE' });
@@ -952,6 +986,7 @@
                 <select id="draft-account-${d.id}">
                   ${accountsData.map(a => `<option value="${a.id}" ${a.id === d.account_id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}
                 </select>
+                <button class="btn btn-send btn-sm" onclick="sendDraftNow(${d.id})">Send Now</button>
                 <button class="btn btn-amber btn-sm" onclick="promoteDraft(${d.id}, 'queue')">Queue</button>
                 <button class="btn btn-primary btn-sm" onclick="promoteDraft(${d.id}, 'schedule')">Schedule...</button>
                 <button class="btn btn-outline btn-sm" onclick="saveDraft(${d.id})">Save</button>
@@ -1030,6 +1065,32 @@
           body: JSON.stringify(body)
         });
         flash('Draft scheduled!');
+      }
+      loadDrafts();
+      loadPosts();
+    }
+
+    async function sendDraftNow(id) {
+      const content = document.getElementById('draft-content-' + id).value.trim();
+      const image_url = document.getElementById('draft-image-' + id).value.trim();
+      const account_id = parseInt(document.getElementById('draft-account-' + id).value);
+
+      if (!content) return flash('Content cannot be empty', 'error');
+      if (!confirm('Send this draft now?')) return;
+
+      // Save edits, promote to pending, then send
+      await fetch('/api/posts/' + id, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, image_url, account_id, status: 'pending', is_queued: 0 })
+      });
+
+      const res = await fetch('/api/posts/' + id + '/send-now', { method: 'POST' });
+      if (res.ok) {
+        flash('Post sent!');
+      } else {
+        const err = await res.json();
+        flash('Send failed: ' + err.error, 'error');
       }
       loadDrafts();
       loadPosts();

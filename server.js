@@ -415,17 +415,18 @@ app.get('/api/posts', (req, res) => {
 });
 
 app.post('/api/posts', (req, res) => {
-  const { account_id, content, scheduled_at, image_url, signed_event, is_queued } = req.body;
+  const { account_id, content, scheduled_at, image_url, signed_event, is_queued, status } = req.body;
   if (!account_id || !content) {
     return res.status(400).json({ error: 'account_id and content required' });
   }
-  if (!is_queued && !scheduled_at) {
+  const postStatus = status === 'draft' ? 'draft' : 'pending';
+  if (postStatus !== 'draft' && !is_queued && !scheduled_at) {
     return res.status(400).json({ error: 'scheduled_at required for non-queued posts' });
   }
 
   const result = db.prepare(
-    'INSERT INTO scheduled_posts (account_id, content, image_url, scheduled_at, is_queued, signed_event) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(account_id, content, image_url || null, scheduled_at || null, is_queued ? 1 : 0, signed_event || null);
+    'INSERT INTO scheduled_posts (account_id, content, image_url, scheduled_at, is_queued, signed_event, status) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(account_id, content, image_url || null, scheduled_at || null, is_queued ? 1 : 0, signed_event || null, postStatus);
 
   res.json({ id: result.lastInsertRowid });
 });
