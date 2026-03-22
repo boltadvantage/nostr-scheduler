@@ -4,6 +4,7 @@ const multer = require('multer');
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { finalizeEvent, getPublicKey, generateSecretKey } = require('nostr-tools/pure');
 const { Relay } = require('nostr-tools/relay');
 const { BunkerSigner, parseBunkerInput } = require('nostr-tools/nip46');
@@ -145,6 +146,15 @@ db.exec(`
     last_fired_date TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (account_id) REFERENCES accounts(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_hash TEXT NOT NULL UNIQUE,
+    key_prefix TEXT NOT NULL,
+    label TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_used_at DATETIME
   );
 `);
 
@@ -383,7 +393,7 @@ app.post('/api/upload-image', upload.single('image'), async (req, res) => {
 // --- Post Routes ---
 
 app.get('/api/posts', (req, res) => {
-  const status = req.query.status; // 'pending', 'sent', 'failed', or undefined for all
+  const status = req.query.status; // 'pending', 'sent', 'failed', 'draft', or undefined for all (excl. drafts/deleted)
   let query = `
     SELECT p.*, a.name as account_name, a.login_type
     FROM scheduled_posts p
@@ -394,6 +404,8 @@ app.get('/api/posts', (req, res) => {
   if (status) {
     query += ` WHERE p.status = ?`;
     params.push(status);
+  } else {
+    query += ` WHERE p.status NOT IN ('draft', 'deleted')`;
   }
 
   query += ` ORDER BY CASE WHEN p.is_queued = 1 THEN 1 ELSE 0 END, p.scheduled_at ASC, p.created_at ASC`;
@@ -424,7 +436,7 @@ app.delete('/api/posts/:id', (req, res) => {
     const imgFile = path.join(uploadsDir, post.image_path);
     if (fs.existsSync(imgFile)) fs.unlinkSync(imgFile);
   }
-  db.prepare(`DELETE FROM scheduled_posts WHERE id = ? AND status = 'pending'`).run(req.params.id);
+  db.prepare(`DELETE FROM scheduled_posts WHERE id = ? AND status IN ('pending', 'draft')`).run(req.params.id);
   res.json({ ok: true });
 });
 
@@ -441,6 +453,120 @@ app.post('/api/posts/:id/send-now', async (req, res) => {
 app.delete('/api/posts/history/clear', (req, res) => {
   db.prepare(`DELETE FROM scheduled_posts WHERE status IN ('sent', 'failed')`).run();
   res.json({ ok: true });
+});
+
+// --- Draft Routes ---
+
+// Promote a draft to queued or scheduled
+app.put('/api/posts/:id', (req, res) => {
+  const post = db.prepare('SELECT * FROM scheduled_posts WHERE id = ?').get(req.params.id);
+  if (!post) return res.status(404).json({ error: 'Post not found' });
+
+  const { content, image_url, account_id, status, scheduled_at, is_queued, signed_event } = req.body;
+
+  const updates = [];
+  const params = [];
+
+  if (content !== undefined) { updates.push('content = ?'); params.push(content); }
+  if (image_url !== undefined) { updates.push('image_url = ?'); params.push(image_url || null); }
+  if (account_id !== undefined) { updates.push('account_id = ?'); params.push(account_id); }
+  if (status !== undefined) { updates.push('status = ?'); params.push(status); }
+  if (scheduled_at !== undefined) { updates.push('scheduled_at = ?'); params.push(scheduled_at || null); }
+  if (is_queued !== undefined) { updates.push('is_queued = ?'); params.push(is_queued ? 1 : 0); }
+  if (signed_event !== undefined) { updates.push('signed_event = ?'); params.push(signed_event || null); }
+
+  if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+
+  params.push(req.params.id);
+  db.prepare(`UPDATE scheduled_posts SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+  res.json({ ok: true });
+});
+
+// --- API Key Routes ---
+
+app.get('/api/api-keys', (req, res) => {
+  const keys = db.prepare('SELECT id, key_prefix, label, created_at, last_used_at FROM api_keys ORDER BY created_at DESC').all();
+  res.json(keys);
+});
+
+app.post('/api/api-keys', (req, res) => {
+  const { label } = req.body;
+  if (!label) return res.status(400).json({ error: 'Label required' });
+
+  const rawKey = 'nsk_' + crypto.randomBytes(32).toString('hex');
+  const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
+  const keyPrefix = rawKey.slice(0, 12) + '...';
+
+  db.prepare('INSERT INTO api_keys (key_hash, key_prefix, label) VALUES (?, ?, ?)').run(keyHash, keyPrefix, label);
+  // Return the full key only once
+  res.json({ key: rawKey, prefix: keyPrefix, label });
+});
+
+app.delete('/api/api-keys/:id', (req, res) => {
+  db.prepare('DELETE FROM api_keys WHERE id = ?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+// --- External API (API key authenticated) ---
+
+function authenticateApiKey(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Missing or invalid Authorization header. Use: Bearer <api_key>' });
+  }
+
+  const rawKey = authHeader.slice(7);
+  const keyHash = crypto.createHash('sha256').update(rawKey).digest('hex');
+  const apiKey = db.prepare('SELECT * FROM api_keys WHERE key_hash = ?').get(keyHash);
+
+  if (!apiKey) {
+    return res.status(401).json({ error: 'Invalid API key' });
+  }
+
+  db.prepare('UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?').run(apiKey.id);
+  next();
+}
+
+app.post('/api/v1/drafts', authenticateApiKey, (req, res) => {
+  const { account_id, content, image_url } = req.body;
+
+  if (!content) return res.status(400).json({ error: 'content is required' });
+
+  // If account_id provided, verify it exists
+  if (account_id) {
+    const account = db.prepare('SELECT id FROM accounts WHERE id = ?').get(account_id);
+    if (!account) return res.status(400).json({ error: 'Account not found' });
+  }
+
+  // Use first account as default if none specified
+  let targetAccountId = account_id;
+  if (!targetAccountId) {
+    const first = db.prepare('SELECT id FROM accounts ORDER BY id LIMIT 1').get();
+    if (!first) return res.status(400).json({ error: 'No accounts configured. Add an account first.' });
+    targetAccountId = first.id;
+  }
+
+  const result = db.prepare(
+    'INSERT INTO scheduled_posts (account_id, content, image_url, status, is_queued) VALUES (?, ?, ?, ?, ?)'
+  ).run(targetAccountId, content, image_url || null, 'draft', 0);
+
+  res.json({ id: result.lastInsertRowid, status: 'draft', account_id: targetAccountId });
+});
+
+app.get('/api/v1/drafts', authenticateApiKey, (req, res) => {
+  const drafts = db.prepare(`
+    SELECT p.id, p.account_id, p.content, p.image_url, p.created_at, a.name as account_name
+    FROM scheduled_posts p
+    JOIN accounts a ON p.account_id = a.id
+    WHERE p.status = 'draft'
+    ORDER BY p.created_at DESC
+  `).all();
+  res.json(drafts);
+});
+
+app.get('/api/v1/accounts', authenticateApiKey, (req, res) => {
+  const accounts = db.prepare('SELECT id, name, npub_hex FROM accounts').all();
+  res.json(accounts);
 });
 
 // --- Publishing Logic ---
