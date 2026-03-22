@@ -22,7 +22,7 @@ function bytesToHex(bytes) {
 }
 
 const app = express();
-const PORT = 3847;
+const PORT = parseInt(process.env.PORT, 10) || 3847;
 
 // Ensure uploads directory exists
 const uploadsDir = path.join(__dirname, 'uploads');
